@@ -8,17 +8,16 @@ import os
 # Find the noise estimate of a set of images
 def estimate_noise(imset):
     avg = np.average(imset, axis=0)
+    print(avg.shape)
+    print(imset[0].shape)
+    sig = np.zeros_like(imset[0], dtype=np.float64)
 
-    sig = np.zeros_like(imset[0])
+    for n in range(len(imset)):
+        sig += (avg - imset[n].astype(dtype=np.float64)) ** 2
 
-    for i in range(imset[0].shape[1]):
-        for j in range(imset[0].shape[0]):
-            for n in range(len(imset)):
-                sig[i][j] += (avg[i][j] - imset[n][i][j]) ** 2
+    sig = (sig  / (len(imgset) - 1)) ** (1/2)
 
-    sig = (sig / (len(imgset) - 1)) ** (1/2)
-
-    avg_sigma = np.average(sigma)
+    avg_sigma = np.average(sig)
     print(avg_sigma)
 
     return avg_sigma
@@ -67,12 +66,12 @@ for path in dataset_path:
 
     # Convert all the images to grayscale
     grayscale = [cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) for frame in imgset]
-
+    estimate_noise(grayscale)
     derivative_set = [np.zeros_like(frame, dtype=np.float32) for frame in grayscale]
     res = imgset.copy()
 
-    # kernel = 0.5 * np.array([-1, 0, 1])
-    kernel = get_gaussian_derivative(1.0)
+    #kernel = 0.5 * np.array([-1, 0, 1])
+    kernel = get_gaussian_derivative(5.0)
 
     kernel_mid = math.floor((len(kernel) / 2))
     for i in range(kernel_mid, len(imgset) - kernel_mid):
