@@ -5,11 +5,11 @@ import cv2
 import os 
 import gc
 
-def Harris(img, window_size=3, k=0.04):
+def Harris(img, window_size=3, sobel_size=3, k=0.04):
     h, w = img.shape[0], img.shape[1]
 
-    sobelx = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=3)
-    sobely = cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=3)
+    sobelx = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=sobel_size)
+    sobely = cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=sobel_size)
 
     Ixx = sobelx ** 2
     Iyy = sobely ** 2
