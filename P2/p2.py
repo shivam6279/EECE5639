@@ -5,7 +5,7 @@ import cv2
 import os 
 import gc
 
-def Harris(img, window_size=3, sobel_size=3, k=0.04, step_size=2):
+def Harris(img, window_size=3, sobel_size=3, k=0.04):
     if len(img.shape) > 2:
         img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
@@ -20,8 +20,8 @@ def Harris(img, window_size=3, sobel_size=3, k=0.04, step_size=2):
     R = np.zeros_like(img, dtype=np.float64)
 
     offset = np.floor(window_size / 2).astype(np.int8)
-    for y in range(offset, h-offset, step_size):
-        for x in range(offset, w-offset, step_size):
+    for y in range(offset, h-offset):
+        for x in range(offset, w-offset):
             Sxx = np.sum(Ixx[y-offset:y+1+offset, x-offset:x+1+offset])
             Syy = np.sum(Iyy[y-offset:y+1+offset, x-offset:x+1+offset])
             Sxy = np.sum(Ixy[y-offset:y+1+offset, x-offset:x+1+offset])
@@ -78,48 +78,95 @@ def mean_shift_converge(index, point, window_size=5, thresh=2.5):
         return None
 
 
-def NCC(imgset, corners):
+def NCC(imgset, corners, windowSize = 3):
 
+    offset = np.floor(windowSize / 2).astype(np.int8)
     res = []
     for i in corners[0]:
-        if (i[1] != 0 and i[0] != 0 and i[1] != 339 and  i[0] != 511  ):
+        if (i[1] != 0 and i[0] != 0 and i[1] <= 339 - offset and  i[0] <= 511 - offset  ):
 
-            f = imgset[0][i[1]-1:i[1]+2, i[0]-1:i[0]+2]
-            
+            f = imgset[0][i[1]-offset:i[1]+1+offset, i[0]-offset:i[0]+1+offset]
+        
             avg = np.sum(f)/9
-            for row in range(0,3):
-                for col in range (0,3): 
+            for row in range(0,windowSize):
+                for col in range (0,windowSize): 
                     f[row][col] -= avg
         
             stdv = math.sqrt(np.sum(f**2))
-            for row in range(0,3):
-                for col in range (0,3): 
+            for row in range(0,windowSize):
+                for col in range (0,windowSize): 
                     f[row][col] /= stdv
 
             for j in corners[1]:
-                if (j[1] != 0 and j[0] != 0 and j[1] != 339 and  j[0] != 511  ):
+                if (j[1] != 0 and j[0] != 0 and j[1] <= 339-offset and  j[0] <= 511 - offset  ):
                     corres = []
-                    g = imgset[1][j[1]-1:j[1]+2, j[0]-1:j[0]+2]
+                    g = imgset[1][j[1]-offset:j[1]+1+offset, j[0]-offset:j[0]+1+offset]
                  
                     avg = np.sum(g)/9
-                    for row in range(0,3):
-                        for col in range (0,3): 
+                    for row in range(0,windowSize):
+                        for col in range (0,windowSize): 
                             g[row][col] -= avg
         
                     stdv = math.sqrt(np.sum(g**2))
-                    for row in range(0,3):
-                        for col in range (0,3): 
+                    for row in range(0,windowSize):
+                        for col in range (0,windowSize): 
                             g[row][col] /= stdv
                     
                     value = np.sum(f*g)
 
-                    if (value > 0.9):
+                    if (value > 0.99):
                         corres.append(i)
                         corres.append(j)
                         res.append(corres)
     
     return(res)
 
+
+def homography(corres):
+    p = 0.9
+    e = 0.1
+    s = len(corres)
+    N = np.log(1-p)/(np.log(1-(1-e)**s))
+    inliners = []
+    inlinecount = 0
+    N = np.int32(N)
+    for x in range(0,N):
+        pointsImg1 = []
+        pointsImg2 = []
+        c = 0
+        while (c < 4): 
+
+            r = np.random.randint(low = 0, high = len(corres))
+            if (corres[r][0] not in pointsImg1):
+                 
+                pointsImg1.append(corres[r][0])
+                pointsImg2.append(corres[r][1])
+                c +=1
+
+        pointsImg1 = np.array(pointsImg1, ndmin = 2)
+        pointsImg2 = np.array(pointsImg2, ndmin = 2)
+
+        h, _= cv2.findHomography(pointsImg1, pointsImg2)
+
+        counter = 0
+        thresh = 20
+        temp = []
+        for p in corres:
+            img2x = (h[0][0] * p[0][0] + h[0][1] * p[0][1] + h[0][2])/(h[2][0] * p[0][0] + h[2][1] * p[0][1] + h[2][2])
+            img2y = ((h[1][0] * p[0][0] + h[1][1] * p[0][1] + h[1][2]))/(h[2][0] * p[0][0] + h[2][1] * p[0][1] + h[2][2])
+            img2x = np.ceil(img2x)
+            img2y = np.ceil(img2y)
+
+            if ((img2x >= p[0][0] - thresh and img2x <= p[0][0] + thresh)and(img2y >= p[0][1] - thresh and img2y <= p[0][1] + thresh)):
+                counter += 1
+                temp.append(p)
+
+        
+
+        if (counter > inlinecount):
+            inliners = temp
+            inlinecount = counter
+    print(inlinecount)
 
 dataset_path = ["DanaHallWay1"]#, "DanaHallWay2", "DanaOffice"]
 
@@ -130,6 +177,7 @@ for path in dataset_path:
         if (len(imgset) < 2):
             imgset.append(cv2.imread(path + "/" + serial_number))
 
+    w, h = imgset[0].shape[1], imgset[0].shape[0]
     grayscale = [cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)for img in imgset]
     grayscale = [np.float32(img) for img in grayscale]
     
@@ -142,4 +190,21 @@ for path in dataset_path:
     corners = [cor1, cor2]    
 
     corres = NCC(grayscale,corners)
-    print (corres)
+
+    out1 = imgset[0].copy()
+    for corner in corres:
+        cv2.circle(out1,(corner[0][0],corner[0][1]),2,(0,0,255))
+
+    out2 = imgset[1].copy()
+    for corner in corres:
+        cv2.circle(out2,(corner[1][0],corner[1][1]),2,(0,0,255))
+    
+    combine = np.concatenate((out1,out2),axis=1)
+
+    for i in corres:
+        cv2.line(combine, (i[0][0], i[0][1]), (i[1][0] + w, i[1][1]),(255,0,0),1)
+
+    plt.imshow(combine, cmap='gray')
+    plt.show()
+    #homography(corres)
+    
