@@ -5,7 +5,7 @@ import cv2
 import os 
 import gc
 
-def Harris(img, window_size=3, sobel_size=3, k=0.04):
+def Harris(img, window_size=3, sobel_size=3, k=0.04, step_size=2):
     if len(img.shape) > 2:
         img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
@@ -20,8 +20,8 @@ def Harris(img, window_size=3, sobel_size=3, k=0.04):
     R = np.zeros_like(img, dtype=np.float64)
 
     offset = np.floor(window_size / 2).astype(np.int8)
-    for y in range(offset, h-offset):
-        for x in range(offset, w-offset):
+    for y in range(offset, h-offset, step_size):
+        for x in range(offset, w-offset, step_size):
             Sxx = np.sum(Ixx[y-offset:y+1+offset, x-offset:x+1+offset])
             Syy = np.sum(Iyy[y-offset:y+1+offset, x-offset:x+1+offset])
             Sxy = np.sum(Ixy[y-offset:y+1+offset, x-offset:x+1+offset])
