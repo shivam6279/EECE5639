@@ -113,7 +113,7 @@ def NCC(imgset, corners):
                     
                     value = np.sum(f*g)
 
-                    if (value > 0.5):
+                    if (value > 0.9):
                         corres.append(i)
                         corres.append(j)
                         res.append(corres)
@@ -132,36 +132,14 @@ for path in dataset_path:
 
     grayscale = [cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)for img in imgset]
     grayscale = [np.float32(img) for img in grayscale]
-
-    cor = [Harris(gray,3,3,0.4) for gray in grayscale]
-    corners = [non_max_suppression(img,5) for img in cor]
-   
-    corres = NCC(grayscale,corners)
-    print (corres[1][1])
-    '''
-    cor = [cv2.dilate(img,None) for img in cor]
-
-    ret, cor[0] = cv2.threshold(cor[0],0.001*cor[0].max(),255,0)
-    ret, cor[1] = cv2.threshold(cor[1],0.01*cor[1].max(),255,0)
-
-    cor[0] = np.uint8(cor[0])
-    cor[1] = np.uint8(cor[1])
-
-    _, _, _, centroids0 = cv2.connectedComponentsWithStats(cor[0])
-    _, _, _, centroids1 = cv2.connectedComponentsWithStats(cor[1])
-
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.001)
-    corners0 = cv2.cornerSubPix(grayscale[0],np.float32(centroids0),(5,5),(-1,-1),criteria)
-    corners1 = cv2.cornerSubPix(grayscale[1],np.float32(centroids1),(5,5),(-1,-1),criteria)
-    corners0 = np.int0(corners0)
-    corners1 = np.int0(corners1)
-    corners = [corners0, corners1]
     
+    ret1 = Harris(grayscale[0], 3, 3, 0.04)
+    cor1 = non_max_suppression(ret1, 5)
+
+    ret2 = Harris(grayscale[1], 3, 3, 0.04)
+    cor2 = non_max_suppression(ret2, 5)
+    
+    corners = [cor1, cor2]    
+
     corres = NCC(grayscale,corners)
-    print (corres[2][0])
-
-    #for img in cor:
-     #   cv2.imshow("img", img)
-
-      #  if cv2.waitKey(0) & 0xff == 27:
-       #     cv2.destroyAllWindows()'''
+    print (corres)
