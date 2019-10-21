@@ -5,7 +5,7 @@ import cv2
 import os 
 import gc
 
-def Harris(img, window_size=3, sobel_size=3, k=0.04):
+def Harris(img, window_size=3, sobel_size=3, k=0.04, step_size=2):
     if len(img.shape) > 2:
         img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
@@ -17,18 +17,16 @@ def Harris(img, window_size=3, sobel_size=3, k=0.04):
     Ixx = sobelx ** 2
     Iyy = sobely ** 2
     Ixy = sobelx * sobely
+
     R = np.zeros_like(img, dtype=np.float64)
 
     offset = np.floor(window_size / 2).astype(np.int8)
-    for y in range(offset, h-offset):
-        for x in range(offset, w-offset):
+    for y in range(offset, h-offset, step_size):
+        for x in range(offset, w-offset, step_size):
             Sxx = np.sum(Ixx[y-offset:y+1+offset, x-offset:x+1+offset])
             Syy = np.sum(Iyy[y-offset:y+1+offset, x-offset:x+1+offset])
             Sxy = np.sum(Ixy[y-offset:y+1+offset, x-offset:x+1+offset])
-            r = (Sxx * Syy) - (Sxy ** 2) - k * (Sxx + Syy) ** 2
-            if r < 0:
-                r = 0
-            R[y][x] = r
+            R[y][x] = (Sxx * Syy) - (Sxy ** 2) - k * (Sxx + Syy) ** 2
 
     R /= np.max(R)
     R *= 255.0
@@ -41,17 +39,24 @@ def non_max_suppression(img, window_size=5, thresh=2.5):
 
     offset = np.floor(window_size / 2).astype(np.int8)
 
-    for y in range(h):
-        for x in range(w):
-            if x <= offset or x >= (w - offset) or y <= offset or y >= (h - offset):
-                img[y][x] = 0
+    temp = np.zeros_like(img)
+    temp[offset:h-offset, offset:w-offset] = img[offset:h-offset, offset:w-offset]
+    img = temp
+    del temp
 
-    index = np.zeros((h, w, 3), dtype=np.uint16)
+    index = np.zeros((h, w, 3), dtype=np.int16)
+
+    index[:, :, 0] = img
+
     for y in range(h):
         for x in range(w):
-            index[y][x] = (img[y][x], x, y)
+            index[y][x][1] = x
+            index[y][x][2] = y
 
     corners = []
+
+    global NMS_index
+    NMS_index = np.zeros((h, w))
 
     for y in range(offset, h - offset, offset):
         for x in range(offset, w - offset, offset):
@@ -59,77 +64,86 @@ def non_max_suppression(img, window_size=5, thresh=2.5):
             if ret:
                 corners.append(ret)
 
-    list(set(corners))
+    corners = list(set(corners))
+    corners.sort()
     return corners
+
 
 def mean_shift_converge(index, point, window_size=5, thresh=2.5):
     x, y = point
     offset = np.floor(window_size / 2).astype(np.int8)
+
+    if NMS_index[y][x] == 1:
+        return None
 
     window = index[y - offset:y + 1 + offset, x - offset:x + 1 + offset]
     if np.max(window[:, :, 0]) > thresh:
         window = np.reshape(window, (window_size ** 2, 3))
         window[::-1] = window[window[:, 0].argsort()]
         if window[0][1] == x and window[0][2] == y:
+            NMS_index[y][x] = 1
             return x, y
         else:
-            return mean_shift_converge(index, (window[0][1], window[0][2]), window_size, thresh)
+            if mean_shift_converge(index, (window[0][1], window[0][2]), window_size, thresh):
+                NMS_index[y][x] = 1
+                return window[0][1], window[0][2]
+            else:
+                return None
     else:
         return None
 
 
-def NCC(imgset, corners, windowSize = 3):
+def NCC(img1, img2, p1, p2, window_size=3):
+    if len(img1.shape) > 2:
+        img1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
 
-    offset = np.floor(windowSize / 2).astype(np.int8)
-    res = []
-    for i in corners[0]:
-        if (i[1] != 0 and i[0] != 0 and i[1] <= 339 - offset and  i[0] <= 511 - offset  ):
+    if len(img2.shape) > 2:
+        img2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
 
-            f = imgset[0][i[1]-offset:i[1]+1+offset, i[0]-offset:i[0]+1+offset]
-        
-            avg = np.sum(f)/9
-            for row in range(0,windowSize):
-                for col in range (0,windowSize): 
-                    f[row][col] -= avg
-        
-            stdv = math.sqrt(np.sum(f**2))
-            for row in range(0,windowSize):
-                for col in range (0,windowSize): 
-                    f[row][col] /= stdv
+    h, w = img1.shape[0], img1.shape[1]
 
-            for j in corners[1]:
-                if (j[1] != 0 and j[0] != 0 and j[1] <= 339-offset and  j[0] <= 511 - offset  ):
-                    corres = []
-                    g = imgset[1][j[1]-offset:j[1]+1+offset, j[0]-offset:j[0]+1+offset]
-                 
-                    avg = np.sum(g)/9
-                    for row in range(0,windowSize):
-                        for col in range (0,windowSize): 
-                            g[row][col] -= avg
-        
-                    stdv = math.sqrt(np.sum(g**2))
-                    for row in range(0,windowSize):
-                        for col in range (0,windowSize): 
-                            g[row][col] /= stdv
-                    
-                    value = np.sum(f*g)
+    offset = np.floor(window_size / 2).astype(np.int8)
 
-                    if (value > 0.99):
-                        corres.append(i)
-                        corres.append(j)
-                        res.append(corres)
-    
-    return(res)
+    (x1, y1) = p1
+    (x2, y2) = p2
+
+    if x1 <= offset or x1 >= (w-offset) or y1 <= offset or y1 >= (h-offset) or\
+            x2 <= offset or x2 >= (w - offset) or y2 <= offset or y2 >= (h - offset):
+        return 0
+
+    window1 = img1[y1-offset:y1+1+offset, x1-offset:x1+1+offset]
+    window1 = window1.astype(np.float64)
+
+    window2 = img2[y2-offset:y2+1+offset, x2-offset:x2+1+offset]
+    window2 = window2.astype(np.float64)
+
+    mean1 = np.mean(window1)
+    std1 = np.std(window1)
+
+    mean2 = np.mean(window2)
+    std2 = np.std(window2)
+
+    s = 0
+    for i in range(0, window_size):
+        for j in range(0, window_size):
+            s += (window1[i][j] - mean1) / std2 * (window2[i][j] - mean2) / std1
+    s /= (window_size ** 2)
+
+    return s
+
 
 
 def homography(corres):
-    p = 0.9
-    e = 0.1
+    p = 0.99
+    e = 0.3
     s = len(corres)
     N = np.log(1-p)/(np.log(1-(1-e)**s))
+    N = np.int32(N)
+
     inliners = []
     inlinecount = 0
-    N = np.int32(N)
+    resh = []
+    
     for x in range(0,N):
         pointsImg1 = []
         pointsImg2 = []
@@ -137,36 +151,40 @@ def homography(corres):
         while (c < 4): 
 
             r = np.random.randint(low = 0, high = len(corres))
-            if (corres[r][0] not in pointsImg1):
-                 
+            if (corres[r][0] not in pointsImg1): 
                 pointsImg1.append(corres[r][0])
                 pointsImg2.append(corres[r][1])
                 c +=1
 
         pointsImg1 = np.array(pointsImg1, ndmin = 2)
         pointsImg2 = np.array(pointsImg2, ndmin = 2)
+      
 
-        h, _= cv2.findHomography(pointsImg1, pointsImg2)
-
-        counter = 0
-        thresh = 20
-        temp = []
-        for p in corres:
-            img2x = (h[0][0] * p[0][0] + h[0][1] * p[0][1] + h[0][2])/(h[2][0] * p[0][0] + h[2][1] * p[0][1] + h[2][2])
-            img2y = ((h[1][0] * p[0][0] + h[1][1] * p[0][1] + h[1][2]))/(h[2][0] * p[0][0] + h[2][1] * p[0][1] + h[2][2])
-            img2x = np.ceil(img2x)
-            img2y = np.ceil(img2y)
-
-            if ((img2x >= p[0][0] - thresh and img2x <= p[0][0] + thresh)and(img2y >= p[0][1] - thresh and img2y <= p[0][1] + thresh)):
-                counter += 1
-                temp.append(p)
-
+        h, status= cv2.findHomography(pointsImg1, pointsImg2)
         
+        if (status[0][0] != 0):
 
-        if (counter > inlinecount):
-            inliners = temp
-            inlinecount = counter
+            counter = 0
+            thresh = 3
+            temp = []
+            for p in corres:
+                img2x = (h[0][0] * p[0][0] + h[0][1] * p[0][1] + h[0][2])/(h[2][0] * p[0][0] + h[2][1] * p[0][1] + h[2][2])
+                img2y = (h[1][0] * p[0][0] + h[1][1] * p[0][1] + h[1][2])/(h[2][0] * p[0][0] + h[2][1] * p[0][1] + h[2][2])
+                img2x = np.ceil(img2x)
+                img2y = np.ceil(img2y)
+
+                if ((img2x >= p[1][0] - thresh and img2x <= p[1][0] + thresh)and(img2y >= p[1][1] - thresh and img2y <= p[1][1] + thresh)):
+                    counter += 1
+                    temp.append(p)
+
+            
+
+            if (counter > inlinecount):
+                inliners = temp
+                inlinecount = counter
+                resh = h
     print(inlinecount)
+    return(inliners,resh)
 
 dataset_path = ["DanaHallWay1"]#, "DanaHallWay2", "DanaOffice"]
 
@@ -188,8 +206,15 @@ for path in dataset_path:
     cor2 = non_max_suppression(ret2, 5)
     
     corners = [cor1, cor2]    
+    NCC_points = []
 
-    corres = NCC(grayscale,corners)
+    for i in range(len(corners[0])):
+        for j in range(len(corners[1])):
+            score = NCC(imgset[0], imgset[1], corners[0][i], corners[1][j], 25)
+            if (score  > 0.9):
+                NCC_points.append((corners[0][i], corners[1][j]))
+    print (len(NCC_points))
+    corres, h = homography(NCC_points)
 
     out1 = imgset[0].copy()
     for corner in corres:
@@ -206,5 +231,4 @@ for path in dataset_path:
 
     plt.imshow(combine, cmap='gray')
     plt.show()
-    #homography(corres)
     
