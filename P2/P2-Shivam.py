@@ -1,5 +1,6 @@
 import numpy as np
 from matplotlib import pyplot as plt
+import matplotlib.path as mplPath
 import math
 import cv2
 import os
@@ -41,15 +42,19 @@ def non_max_suppression(img, window_size=5, thresh=2.5):
 
     offset = np.floor(window_size / 2).astype(np.int8)
 
-    for y in range(h):
-        for x in range(w):
-            if x <= offset or x >= (w - offset) or y <= offset or y >= (h - offset):
-                img[y][x] = 0
+    temp = np.zeros_like(img)
+    temp[offset:h-offset, offset:w-offset] = img[offset:h-offset, offset:w-offset]
+    img = temp
+    del temp
 
     index = np.zeros((h, w, 3), dtype=np.int16)
+
+    index[:, :, 0] = img
+
     for y in range(h):
         for x in range(w):
-            index[y][x] = (img[y][x], x, y)
+            index[y][x][1] = x
+            index[y][x][2] = y
 
     corners = []
 
@@ -134,17 +139,17 @@ def remove_values_from_list(the_list, val):
     return [value for value in the_list if value[1] != val]
 
 
-def filter_NCC(NCC, score_thresh=0.8, dif_thresh=0.1):
-    NCC = [NCC[i] for i in range(len(NCC)) if NCC[i][0] > score_thresh]
-    NCC.sort(key=lambda x: x[0], reverse=True)
+def filter_NCC(NCC_list, score_thresh=0.6, dif_thresh=0.1, height_thresh=20):
+    NCC_list = [NCC_list[i] for i in range(len(NCC_list)) if NCC_list[i][0] > score_thresh]
+    NCC_list.sort(key=lambda x: x[0], reverse=True)
 
     if dif_thresh > 0.01:
         while True:
             flag = 0
-            for i in range(len(NCC)):
-                for j in range(i+1, len(NCC)):
-                    if NCC[i][1] == NCC[j][1] and NCC[i][0] - NCC[j][0] <= dif_thresh:
-                        NCC = remove_values_from_list(NCC, NCC[i][1])
+            for i in range(len(NCC_list)):
+                for j in range(i+1, len(NCC_list)):
+                    if NCC_list[i][1] == NCC_list[j][1] and NCC_list[i][0] - NCC_list[j][0] <= dif_thresh:
+                        NCC_list = remove_values_from_list(NCC_list, NCC_list[i][1])
                         flag = 1
                         break
                 if flag:
@@ -152,8 +157,7 @@ def filter_NCC(NCC, score_thresh=0.8, dif_thresh=0.1):
             if flag == 0:
                 break
 
-    print(np.array(NCC))
-    return NCC
+    return NCC_list
 
 
 def est_homography(points1, points2):
@@ -185,7 +189,10 @@ def est_homography(points1, points2):
                   [h[3], h[4], h[5]],
                   [h[6], h[7],  1]])
 
-    H, _ = cv2.findHomography(np.array(points2), np.array(points1), method=cv2.RANSAC)
+    np_points1 = np.array(points1)
+    np_points2 = np.array(points2)
+
+    H, _ = cv2.findHomography(np_points2, np_points1, method=cv2.RANSAC)
 
     return H
 
@@ -197,77 +204,143 @@ def get_point_from_homography(p, H):
     return np.array([x, y], dtype=np.int16)
 
 
-dataset_path = ["DanaHallWay1", "DanaHallWay2", "DanaOffice"]
+def main():
+    dataset_path = ["DanaHallWay1", "DanaHallWay2", "DanaOffice"]
 
-for path in dataset_path:
-    print(path)
+    for path in dataset_path:
+        print(path)
 
-    # Open each image in the specified folder and save them in imgset
-    imgset = []
-    for serial_number in os.listdir(path + '/'):
-        imgset.append(cv2.imread(path + '/' + serial_number))
+        # Open each image in the specified folder and save them in imgset
+        imgset = []
+        for serial_number in os.listdir(path + '/'):
+            imgset.append(cv2.imread(path + '/' + serial_number))
 
-    w, h = imgset[0].shape[1], imgset[0].shape[0]
+        w, h = imgset[0].shape[1], imgset[0].shape[0]
 
-    grayscale = [cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) for frame in imgset]
+        current_img = imgset[0]
+        x_shift, y_shift = 0, 0
 
-    corners = []
-    for frame in grayscale:
-        ret = Harris(frame, 3, 3, 0.04)
-        centroids = non_max_suppression(ret, 15)
-        corners.append(centroids)
+        for img_no in range(1, len(imgset)):
+            w_cur, h_cur = current_img.shape[1], current_img.shape[0]
 
-    NCC_score = []
-    for i in range(len(corners[0])):
-        for j in range(len(corners[1])):
-            score = NCC(imgset[0], imgset[1], corners[0][i], corners[1][j], 25)
-            NCC_score.append((score, corners[0][i], corners[1][j]))
+            corners = []
 
-    # FIlters the NCC list based on some parameters - not very important, just testing things
-    NCC_score = filter_NCC(NCC_score)
+            ret = Harris(current_img, 3, 3, 0.04)
+            centroids = non_max_suppression(ret, 9)
+            corners.append(centroids)
 
-    # Only send the top 10 NCC corners for the homography calculation - temporary
-    p1 = [(NCC_score[i][1][0], NCC_score[i][1][1]) for i in range(min(10, len(NCC_score)))]
-    p2 = [(NCC_score[i][2][0], NCC_score[i][2][1]) for i in range(min(10, len(NCC_score)))]
+            ret = Harris(imgset[img_no], 3, 3, 0.04)
+            centroids = non_max_suppression(ret, 9)
+            corners.append(centroids)
 
-    # Get homography
-    H = est_homography(p1, p2)
-    Hi = np.linalg.inv(H)
+            NCC_score = []
+            for i in range(len(corners[0])):
+                for j in range(len(corners[1])):
+                    score = NCC(imgset[0], imgset[1], corners[0][i], corners[1][j], 25)
+                    NCC_score.append((score, corners[0][i], corners[1][j]))
 
-    # Calculate the bounding edges after warping the second image with H
-    # c1-c4 are the new corners of the image after warping
-    c1 = get_point_from_homography((0, 0), H)
-    c2 = get_point_from_homography((w-1, 0), H)
-    c3 = get_point_from_homography((0, h-1), H)
-    c4 = get_point_from_homography((w-1, h-1), H)
-    w_new = np.max([c4[0]-c1[0], c4[0]-c3[0], c2[0]-c1[0], c2[0]-c3[0]])
-    h_new = np.max([c4[1]-c1[1], c4[1]-c2[1], c3[1]-c1[1], c3[1]-c2[1]])
+            # Filters the NCC list based on some parameters - not very important, just testing things
+            NCC_score = filter_NCC(NCC_score)
 
-    # Offset matrix - since the homography may give negative values after warping
-    # The image needs to be shifted accordingly to keep the coordinates positive
-    O = np.array([[1, 0, -np.min([c1[0], c3[0]])],
-                  [0, 1, -np.min([c1[1], c2[1]])],
-                  [0, 0, 1]])
+            # Only send the top 10 NCC corners for the homography calculation - temporary
+            p1 = [(NCC_score[i][1][0], NCC_score[i][1][1]) for i in range(min(15, len(NCC_score)))]
+            p2 = [(NCC_score[i][2][0], NCC_score[i][2][1]) for i in range(min(15, len(NCC_score)))]
 
-    # Warp the second image based on the Homography and offset matrix with the new image size
-    # @ is the notation for matrix multiplication
-    output = cv2.warpPerspective(imgset[1], O@H, (w_new, h_new))
+            # Get homography
+            H = est_homography(p1, p2)
 
-    out1 = imgset[0].copy()
-    for corner in corners[0]:
-        cv2.circle(out1, (corner[0], corner[1]), 2, (0, 0, 255))
-    out2 = imgset[1].copy()
-    for corner in corners[1]:
-        cv2.circle(out2, (corner[0], corner[1]), 2, (0, 0, 255))
-    combine = np.concatenate((out1, out2), axis=1)
-    for i in range(8):
-        cv2.line(combine, (NCC_score[i][1][0], NCC_score[i][1][1]), (NCC_score[i][2][0]+w, NCC_score[i][2][1]), (255, 0, 0), 1)
+            out1 = current_img.copy()
+            for corner in corners[0]:
+                cv2.circle(out1, (corner[0], corner[1]), 2, (0, 0, 255))
+            out2 = np.zeros((h_cur, w, 3), dtype=np.uint8)
+            out2[y_shift:h + y_shift, 0:w] = imgset[img_no]
+            for corner in corners[1]:
+                cv2.circle(out2, (corner[0], corner[1] + y_shift), 2, (0, 0, 255))
+            combine = np.concatenate((out1, out2), axis=1)
+            for i in range(min(8, len(NCC_score))):
+                cv2.line(combine, (NCC_score[i][1][0], NCC_score[i][1][1]), (NCC_score[i][2][0] + w_cur, NCC_score[i][2][1] + y_shift), (255, 0, 0), 1)
+            plt.imshow(cv2.cvtColor(combine, cv2.COLOR_BGR2RGB))
+            plt.axis('off')
+            plt.show()
 
-    plt.figure()
-    plt.imshow(cv2.cvtColor(combine, cv2.COLOR_BGR2RGB))
-    plt.axis('off')
-    plt.figure()
-    plt.imshow(cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
-    plt.axis('off')
-    plt.show()
+            # Calculate the bounding edges after warping the second image with H
+            # c1-c4 are the new corners of the image after warping
+            c1 = get_point_from_homography((0, 0), H)
+            c2 = get_point_from_homography((w-1, 0), H)
+            c3 = get_point_from_homography((0, h-1), H)
+            c4 = get_point_from_homography((w-1, h-1), H)
+            center_new = get_point_from_homography((w/2, h/2), H)
+            # w_new and h_new are the bounding dimensions of the warped image
+            w_new = np.max([c4[0]-c1[0], c4[0]-c3[0], c2[0]-c1[0], c2[0]-c3[0]])
+            h_new = np.max([c4[1]-c1[1], c4[1]-c2[1], c3[1]-c1[1], c3[1]-c2[1]])
+            # x_offset and y_offset are the minimum x, y coordinates of the warped image
+            x_offset = np.min([c1[0], c3[0]])
+            y_offset = np.min([c1[1], c2[1]])
+            # Determine necessary offsets to shift the images so that the take up the entire image
+            # This is done because the warp function ignores negative values produced by homography transformation
+            # So if the offsets computed earlier are negative, the images need to be shifted
+            if y_offset < 0:
+                y_shift = -y_offset
+            else:
+                y_shift = 0
+
+            if x_offset < 0:
+                x_shift = -x_offset
+            else:
+                x_shift = 0
+
+            # Bounding box of the warped image in the combined image coordinates
+            merge_offset = 5
+            roi = mplPath.Path(np.array([[c1[0] + x_shift + merge_offset, c1[1] + y_shift + merge_offset],
+                                         [c2[0] + x_shift - merge_offset, c2[1] + y_shift + merge_offset],
+                                         [c4[0] + x_shift - merge_offset, c4[1] + y_shift - merge_offset],
+                                         [c3[0] + x_shift + merge_offset, c3[1] + y_shift - merge_offset]]))
+            # Offset matrix - since the homography may give negative values after warping
+            # The image needs to be shifted accordingly to keep the coordinates positive
+            # x_offset = -np.min([c1[0], c3[0]])
+            # y_offset = -np.min([c1[1], c2[1]])
+            # x_offset, y_offset = NCC_score[0][1] - get_point_from_homography(NCC_score[0][2], H)
+            O = np.array([[1, 0, x_shift],
+                          [0, 1, y_shift],
+                          [0, 0, 1]])
+            print(O)
+            # Warp the second image based on the Homography and offset matrix with the new image size
+            # @ is the notation for matrix multiplication
+            output = cv2.warpPerspective(imgset[img_no], O@H, (max(w_new+x_offset, w_cur), max(h_new, h_cur)))
+            # output = cv2.addWeighted(out1, 0.5, out2, 0.5, 0.0)
+            # output = out.copy()
+
+            plt.figure()
+            plt.imshow(cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
+            plt.axis('off')
+            plt.show()
+
+            print(output.shape)
+            print(current_img.shape)
+            output[y_shift: h_cur+y_shift, x_shift: w_cur+x_shift] = current_img
+
+            current_img = output
+
+            # r1_den = (y_shift-center_new[1]) ** 2 + (x_shift-center_new[0]) ** 2
+            # r2_den = (h/2) ** 2 + (w/2) ** 2
+            # for i in range(h):
+            #     for j in range(w):
+            #         if roi.contains_point((j+x_shift, i+y_shift)):
+            #             # r1 = 1 - (i+y_shift-center_new[1]) ** 2 + (j+x_shift-center_new[0]) ** 2 / r1_den
+            #             # r2 = 1 - (i-h/2) ** 2 + (j-w/2) ** 2 / r2_den
+            #             r1 = 1
+            #             r2 = 1
+            #             temp = (r1 * output[i+y_shift][j+x_shift].astype(np.float32) + r2 * imgset[0][i][j].astype(np.float32)) / (r1+r2)
+            #             output[i+y_shift][j+x_shift] = temp
+            #         else:
+            #             output[i+y_shift][j+x_shift] = imgset[0][i][j]
+
+            plt.figure()
+            plt.imshow(cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
+            plt.axis('off')
+            plt.show()
+
+
+if __name__ == "__main__":
+    main()
 
