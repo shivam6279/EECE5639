@@ -6,6 +6,7 @@ import cv2
 import os
 import gc
 import time
+import colorsys
 
 
 def Harris(img, window_size=3, sobel_size=3, k=0.04, step_size=1):
@@ -163,7 +164,7 @@ def est_homography(points1, points2, thresh=3, N_max=10000):
 
     inliers = []
     inlier_max = 0
-    print(N, s)
+    print("Corner size:", s, "")
     for x in range(0, N):
         four_points1 = []
         four_points2 = []
@@ -216,7 +217,7 @@ def get_point_from_homography(p, H):
     return np.array([x, y], dtype=np.int16)
 
 
-def display_corner_pairings(img1, img2, corners_a, corners_b, NCC_score, lines, y1_shift=0, y2_shift=0):
+def display_corner_pairings(img1, img2, lines, y1_shift=0, y2_shift=0):
     w1, h1 = img1.shape[1], img1.shape[0]
     w2, h2 = img2.shape[1], img2.shape[0]
 
@@ -228,17 +229,16 @@ def display_corner_pairings(img1, img2, corners_a, corners_b, NCC_score, lines, 
     out2[y2_shift:h2+y2_shift, 0:w2] = img2
     combine = np.concatenate((out1, out2), axis=1)
 
-    for p in corners_a:
-        cv2.circle(combine, (p[0], p[1]+y1_shift), 2, (0, 255, 0))
-    for p in corners_b:
-        cv2.circle(combine, (p[0] + w1, p[1]+y2_shift), 2, (0, 255, 0))
-    for p in NCC_score:
-        cv2.circle(combine, (p[1][0], p[1][1]+y1_shift), 2, (0, 0, 255))
-        cv2.circle(combine, (p[2][0]+w1, p[2][1]+y2_shift), 2, (0, 0, 255))
     for p in lines:
-        cv2.line(combine, (p[0][0], p[0][1]+y1_shift), (p[1][0]+w1, p[1][1]+y2_shift), (255, 0, 0), 1)
+        cv2.circle(combine, (p[0][0], p[0][1] + y1_shift), 2, (0, 0, 255), 1)
+        cv2.circle(combine, (p[1][0] + w1, p[1][1] + y2_shift), 2, (0, 0, 255), 1)
 
-    plt.imshow(cv2.cvtColor(combine, cv2.COLOR_BGR2RGB))
+        hsv = np.array((np.random.rand(), 1, 1))
+        rgb = list((np.array(colorsys.hsv_to_rgb(hsv[0], hsv[1], hsv[2])) * 255.0).astype(np.uint16))
+        rgb = [int(rgb[0]), int(rgb[1]), int(rgb[2])]
+        cv2.line(combine, (p[0][0], p[0][1]+y1_shift), (p[1][0]+w1, p[1][1]+y2_shift), rgb, 1)
+
+    plt.imshow(combine)
     plt.axis('off')
     plt.show()
 
@@ -252,14 +252,14 @@ def main():
         # Open each image in the specified folder and save them in imgset
         imgset = []
         for serial_number in os.listdir(path + '/'):
-            imgset.append(cv2.imread(path + '/' + serial_number))
+            imgset.append(cv2.cvtColor(cv2.imread(path + '/' + serial_number), cv2.COLOR_BGR2RGB))
 
         w, h = imgset[0].shape[1], imgset[0].shape[0]
 
         current_img = imgset[0]
         x_shift, y_shift = 0, 0
 
-        for img_no in range(1, len(imgset)):
+        for img_no in range(1, 2):
             w_cur, h_cur = current_img.shape[1], current_img.shape[0]
 
             corners = []
@@ -270,7 +270,7 @@ def main():
             print("Harris: ", time.time() - a)  # Timing Statements
             a = time.time()                     # Timing Statements
             centroids = non_max_suppression(ret, 15)
-            print("Harris: ", time.time() - a)  # Timing Statements
+            print("NMS: ", time.time() - a)  # Timing Statements
             a = time.time()                     # Timing Statements
             corners.append(centroids)
 
@@ -299,11 +299,18 @@ def main():
             p1 = [p[1] for p in NCC_score]
             p2 = [p[2] for p in NCC_score]
             H, inliers = est_homography(p1, p2)
+            H_I = np.linalg.inv(H)
+            print(H)
+            print(H_I)
 
             print("Homography: ", time.time() - a)
             a = time.time()
 
-            display_corner_pairings(current_img, imgset[img_no], corners[0], corners[1], NCC_score, inliers)
+            # Display corner pairings before RANSAC
+            p1 = [(p[1], p[2]) for p in NCC_score]
+            display_corner_pairings(current_img, imgset[img_no], p1)
+            # Display corner pairings after RANSAC
+            display_corner_pairings(current_img, imgset[img_no], inliers)
 
             # Calculate the bounding edges after warping the second image with H
             # c1-c4 are the new corners of the image after warping
@@ -343,24 +350,24 @@ def main():
 
             output[y_shift: h_cur+y_shift, x_shift: w_cur+x_shift] = current_img
 
+            for i in range(h):
+                for j in range(w):
+                    p2 = get_point_from_homography((j, i), H_I)
+                    if 0 <= p2[0] < w and 0 <= p2[1] < h:
+                        output[p2[1]+y_shift][p2[0]+x_shift] = (255, 255, 255)
+
+                    # if roi2.contains_point((j+x_shift, i+y_shift)):
+                    #     r1 = 1
+                    #     r2 = 1
+                    #     temp = (r1 * output[i+y_shift][j+x_shift].astype(np.float32) + r2 * current_img[i][j].astype(np.float32)) / (r1+r2)
+                    #     output[i+y_shift][j+x_shift] = temp
+                    # else:
+                    #     output[i+y_shift][j+x_shift] = current_img[i][j]
+
             current_img = output
 
-            # r1_den = (y_shift-center_new[1]) ** 2 + (x_shift-center_new[0]) ** 2
-            # r2_den = (h/2) ** 2 + (w/2) ** 2
-            # for i in range(h):
-            #     for j in range(w):
-            #         if roi.contains_point((j+x_shift, i+y_shift)):
-            #             # r1 = 1 - (i+y_shift-center_new[1]) ** 2 + (j+x_shift-center_new[0]) ** 2 / r1_den
-            #             # r2 = 1 - (i-h/2) ** 2 + (j-w/2) ** 2 / r2_den
-            #             r1 = 1
-            #             r2 = 1
-            #             temp = (r1 * output[i+y_shift][j+x_shift].astype(np.float32) + r2 * imgset[0][i][j].astype(np.float32)) / (r1+r2)
-            #             output[i+y_shift][j+x_shift] = temp
-            #         else:
-            #             output[i+y_shift][j+x_shift] = imgset[0][i][j]
-
             plt.figure()
-            plt.imshow(cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
+            plt.imshow(output)
             plt.axis('off')
             plt.show()
 
