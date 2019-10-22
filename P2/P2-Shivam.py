@@ -8,7 +8,7 @@ import gc
 import time
 
 
-def Harris(img, window_size=3, sobel_size=3, k=0.04, step_size=2):
+def Harris(img, window_size=3, sobel_size=3, k=0.04, step_size=1):
     if len(img.shape) > 2:
         img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
@@ -29,7 +29,10 @@ def Harris(img, window_size=3, sobel_size=3, k=0.04, step_size=2):
             Sxx = np.sum(Ixx[y-offset:y+1+offset, x-offset:x+1+offset])
             Syy = np.sum(Iyy[y-offset:y+1+offset, x-offset:x+1+offset])
             Sxy = np.sum(Ixy[y-offset:y+1+offset, x-offset:x+1+offset])
-            R[y][x] = (Sxx * Syy) - (Sxy ** 2) - k * (Sxx + Syy) ** 2
+            r = (Sxx*Syy)-(Sxy**2) - k*(Sxx+Syy)**2
+            if r < 0:
+                r = 0
+            R[y][x] = r
 
     R /= np.max(R)
     R *= 255.0
@@ -129,7 +132,7 @@ def NCC(img1, img2, p1, p2, window_size=3):
     s = 0
     for i in range(0, window_size):
         for j in range(0, window_size):
-            s += (window1[i][j] - mean1) / std2 * (window2[i][j] - mean2) / std1
+            s += (window1[i][j] - mean1) / std1 * (window2[i][j] - mean2) / std2
     s /= (window_size ** 2)
 
     return s
@@ -139,69 +142,105 @@ def remove_values_from_list(the_list, val):
     return [value for value in the_list if value[1] != val]
 
 
-def filter_NCC(NCC_list, score_thresh=0.6, dif_thresh=0.1, height_thresh=20):
-    NCC_list = [NCC_list[i] for i in range(len(NCC_list)) if NCC_list[i][0] > score_thresh]
+def filter_NCC(NCC_list, len_thresh=0, score_thresh=0):
     NCC_list.sort(key=lambda x: x[0], reverse=True)
 
-    if dif_thresh > 0.01:
-        while True:
-            flag = 0
-            for i in range(len(NCC_list)):
-                for j in range(i+1, len(NCC_list)):
-                    if NCC_list[i][1] == NCC_list[j][1] and NCC_list[i][0] - NCC_list[j][0] <= dif_thresh:
-                        NCC_list = remove_values_from_list(NCC_list, NCC_list[i][1])
-                        flag = 1
-                        break
-                if flag:
-                    break
-            if flag == 0:
-                break
+    if score_thresh > 0:
+        NCC_list = [NCC_list[i] for i in range(len(NCC_list)) if NCC_list[i][0] > score_thresh]
+
+    if 0 < len_thresh <= len(NCC_list):
+        NCC_list = NCC_list[:len_thresh]
 
     return NCC_list
 
 
-def est_homography(points1, points2):
-    (x1, y1) = np.array(points1[0], dtype=np.float64)
-    (x2, y2) = np.array(points1[1], dtype=np.float64)
-    (x3, y3) = np.array(points1[2], dtype=np.float64)
-    (x4, y4) = np.array(points1[3], dtype=np.float64)
+def est_homography(points1, points2, thresh=3, N_max=10000):
+    p = 0.9
+    e = 0.3
+    s = len(points1)
+    N = np.min((np.log(1 - p) / (np.log(1 - (1 - e) ** s)), N_max))
+    N = np.int32(N)
 
-    (x1_, y1_) = np.array(points2[0], dtype=np.float64)
-    (x2_, y2_) = np.array(points2[1], dtype=np.float64)
-    (x3_, y3_) = np.array(points2[2], dtype=np.float64)
-    (x4_, y4_) = np.array(points2[3], dtype=np.float64)
+    inliers = []
+    inlier_max = 0
+    print(N, s)
+    for x in range(0, N):
+        four_points1 = []
+        four_points2 = []
+        c = 0
+        while c < 4:
 
-    # Assume H33 = 1
-    A = np.array([[x1, y1, 1, 0,  0,  0, -x1*x1_, -y1*x1_],
-                  [0,  0,  0, x1, y1, 1, -x1*y1_, -y1*y1_],
-                  [x2, y2, 1, 0,  0,  0, -x2*x2_, -y2*x2_],
-                  [0,  0,  0, x2, y2, 1, -x2*y2_, -y2*y2_],
-                  [x3, y3, 1, 0,  0,  0, -x3*x3_, -y3*x3_],
-                  [0,  0,  0, x3, y3, 1, -x3*y3_, -y3*y3_],
-                  [x4, y4, 1, 0,  0,  0, -x4*x4_, -y4*x4_],
-                  [0,  0,  0, x4, y4, 1, -x4*y4_, -y4*y4_]], dtype=np.float64)
+            r = np.random.randint(low=0, high=s)
+            if points1[r] not in four_points1 and points2[r] not in four_points2:
+                four_points1.append(points1[r])
+                four_points2.append(points2[r])
+                c += 1
 
-    B = np.transpose(np.array([x1_, y1_, x2_, y2_, x3_, y3_, x4_, y4_], dtype=np.float64))
+        four_points1 = np.array(four_points1, ndmin=2)
+        four_points2 = np.array(four_points2, ndmin=2)
 
-    h = np.linalg.solve(A, B)
+        h, status = cv2.findHomography(four_points2, four_points1)
 
-    H = np.array([[h[0], h[1], h[2]],
-                  [h[3], h[4], h[5]],
-                  [h[6], h[7],  1]])
+        if status[0][0] != 0:
+            counter = 0
+            temp = []
+            for i in range(len(points1)):
+                x1, y1 = get_point_from_homography(points2[i], h)
+                if x1 is None or y1 is None:
+                    break
 
-    np_points1 = np.array(points1)
-    np_points2 = np.array(points2)
+                if points1[i][0]-thresh <= x1 <= points1[i][0]+thresh and points1[i][1]-thresh <= y1 <= points1[i][1]+thresh:
+                    counter += 1
+                    temp.append((points1[i], points2[i]))
 
-    H, _ = cv2.findHomography(np_points2, np_points1, method=cv2.RANSAC)
+            if counter > inlier_max:
+                inliers = temp
+                inlier_max = counter
 
-    return H
+    p1 = np.array([(k[0][0], k[0][1]) for k in inliers])
+    p2 = np.array([(k[1][0], k[1][1]) for k in inliers])
+    h, _ = cv2.findHomography(p2, p1)
+    return h, inliers
 
 
 def get_point_from_homography(p, H):
     den = H[2][0]*p[0] + H[2][1]*p[1] + 1
+    if den == 0.0 or math.isnan(den):
+        return None, None
     x = (H[0][0]*p[0] + H[0][1]*p[1] + H[0][2]) / den
     y = (H[1][0]*p[0] + H[1][1]*p[1] + H[1][2]) / den
+
+    if np.fabs(x) > 16000 or np.fabs(y) > 16000:
+        return None, None
+
     return np.array([x, y], dtype=np.int16)
+
+
+def display_corner_pairings(img1, img2, corners_a, corners_b, NCC_score, lines, y1_shift=0, y2_shift=0):
+    w1, h1 = img1.shape[1], img1.shape[0]
+    w2, h2 = img2.shape[1], img2.shape[0]
+
+    w_max, h_max = np.max((w1, w2)), np.max((h1, h2))
+
+    out1 = np.zeros((h_max, w_max, 3), dtype=np.uint8)
+    out1[y1_shift:h1+y1_shift, 0:w1] = img1
+    out2 = np.zeros((h_max, w_max, 3), dtype=np.uint8)
+    out2[y2_shift:h2+y2_shift, 0:w2] = img2
+    combine = np.concatenate((out1, out2), axis=1)
+
+    for p in corners_a:
+        cv2.circle(combine, (p[0], p[1]+y1_shift), 2, (0, 255, 0))
+    for p in corners_b:
+        cv2.circle(combine, (p[0] + w1, p[1]+y2_shift), 2, (0, 255, 0))
+    for p in NCC_score:
+        cv2.circle(combine, (p[1][0], p[1][1]+y1_shift), 2, (0, 0, 255))
+        cv2.circle(combine, (p[2][0]+w1, p[2][1]+y2_shift), 2, (0, 0, 255))
+    for p in lines:
+        cv2.line(combine, (p[0][0], p[0][1]+y1_shift), (p[1][0]+w1, p[1][1]+y2_shift), (255, 0, 0), 1)
+
+    plt.imshow(cv2.cvtColor(combine, cv2.COLOR_BGR2RGB))
+    plt.axis('off')
+    plt.show()
 
 
 def main():
@@ -225,43 +264,46 @@ def main():
 
             corners = []
 
-            ret = Harris(current_img, 3, 3, 0.04)
-            centroids = non_max_suppression(ret, 9)
+            # Get corners for the first image
+            a = time.time()                     # Timing Statements
+            ret = Harris(current_img, 3, 3, 0.04, step_size=2)
+            print("Harris: ", time.time() - a)  # Timing Statements
+            a = time.time()                     # Timing Statements
+            centroids = non_max_suppression(ret, 15)
+            print("Harris: ", time.time() - a)  # Timing Statements
+            a = time.time()                     # Timing Statements
             corners.append(centroids)
 
-            ret = Harris(imgset[img_no], 3, 3, 0.04)
-            centroids = non_max_suppression(ret, 9)
+            # Get corners for the second image
+            ret = Harris(imgset[img_no], 3, 3, 0.04, step_size=2)
+            print("Harris: ", time.time() - a)  # Timing Statements
+            a = time.time()                     # Timing Statements
+            centroids = non_max_suppression(ret, 15)
+            print("NMS: ", time.time() - a)
+            a = time.time()
             corners.append(centroids)
 
+            # Calculate NCC score for each corner pairing
             NCC_score = []
             for i in range(len(corners[0])):
                 for j in range(len(corners[1])):
                     score = NCC(imgset[0], imgset[1], corners[0][i], corners[1][j], 25)
                     NCC_score.append((score, corners[0][i], corners[1][j]))
 
-            # Filters the NCC list based on some parameters - not very important, just testing things
-            NCC_score = filter_NCC(NCC_score)
-
-            # Only send the top 10 NCC corners for the homography calculation - temporary
-            p1 = [(NCC_score[i][1][0], NCC_score[i][1][1]) for i in range(min(15, len(NCC_score)))]
-            p2 = [(NCC_score[i][2][0], NCC_score[i][2][1]) for i in range(min(15, len(NCC_score)))]
+            # Filters the NCC list based on some parameters - sort by score with a threshold, min length
+            NCC_score = filter_NCC(NCC_score, len_thresh=20)
+            print("Harris: ", time.time() - a)  # Timing Statements
+            a = time.time()                     # Timing Statements
 
             # Get homography
-            H = est_homography(p1, p2)
+            p1 = [p[1] for p in NCC_score]
+            p2 = [p[2] for p in NCC_score]
+            H, inliers = est_homography(p1, p2)
 
-            out1 = current_img.copy()
-            for corner in corners[0]:
-                cv2.circle(out1, (corner[0], corner[1]), 2, (0, 0, 255))
-            out2 = np.zeros((h_cur, w, 3), dtype=np.uint8)
-            out2[y_shift:h + y_shift, 0:w] = imgset[img_no]
-            for corner in corners[1]:
-                cv2.circle(out2, (corner[0], corner[1] + y_shift), 2, (0, 0, 255))
-            combine = np.concatenate((out1, out2), axis=1)
-            for i in range(min(8, len(NCC_score))):
-                cv2.line(combine, (NCC_score[i][1][0], NCC_score[i][1][1]), (NCC_score[i][2][0] + w_cur, NCC_score[i][2][1] + y_shift), (255, 0, 0), 1)
-            plt.imshow(cv2.cvtColor(combine, cv2.COLOR_BGR2RGB))
-            plt.axis('off')
-            plt.show()
+            print("Homography: ", time.time() - a)
+            a = time.time()
+
+            display_corner_pairings(current_img, imgset[img_no], corners[0], corners[1], NCC_score, inliers)
 
             # Calculate the bounding edges after warping the second image with H
             # c1-c4 are the new corners of the image after warping
@@ -276,7 +318,7 @@ def main():
             # x_offset and y_offset are the minimum x, y coordinates of the warped image
             x_offset = np.min([c1[0], c3[0]])
             y_offset = np.min([c1[1], c2[1]])
-            # Determine necessary offsets to shift the images so that the take up the entire image
+            # Determine necessary offsets to shift the images so that they take up the entire image
             # This is done because the warp function ignores negative values produced by homography transformation
             # So if the offsets computed earlier are negative, the images need to be shifted
             if y_offset < 0:
@@ -289,34 +331,16 @@ def main():
             else:
                 x_shift = 0
 
-            # Bounding box of the warped image in the combined image coordinates
-            merge_offset = 5
-            roi = mplPath.Path(np.array([[c1[0] + x_shift + merge_offset, c1[1] + y_shift + merge_offset],
-                                         [c2[0] + x_shift - merge_offset, c2[1] + y_shift + merge_offset],
-                                         [c4[0] + x_shift - merge_offset, c4[1] + y_shift - merge_offset],
-                                         [c3[0] + x_shift + merge_offset, c3[1] + y_shift - merge_offset]]))
             # Offset matrix - since the homography may give negative values after warping
             # The image needs to be shifted accordingly to keep the coordinates positive
-            # x_offset = -np.min([c1[0], c3[0]])
-            # y_offset = -np.min([c1[1], c2[1]])
-            # x_offset, y_offset = NCC_score[0][1] - get_point_from_homography(NCC_score[0][2], H)
             O = np.array([[1, 0, x_shift],
                           [0, 1, y_shift],
                           [0, 0, 1]])
-            print(O)
+
             # Warp the second image based on the Homography and offset matrix with the new image size
             # @ is the notation for matrix multiplication
-            output = cv2.warpPerspective(imgset[img_no], O@H, (max(w_new+x_offset, w_cur), max(h_new, h_cur)))
-            # output = cv2.addWeighted(out1, 0.5, out2, 0.5, 0.0)
-            # output = out.copy()
+            output = cv2.warpPerspective(imgset[img_no], O @ H, (max(w_new+x_offset, w_cur), max(h_new, h_cur)))
 
-            plt.figure()
-            plt.imshow(cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
-            plt.axis('off')
-            plt.show()
-
-            print(output.shape)
-            print(current_img.shape)
             output[y_shift: h_cur+y_shift, x_shift: w_cur+x_shift] = current_img
 
             current_img = output
@@ -343,4 +367,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
