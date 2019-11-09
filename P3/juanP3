@@ -1,0 +1,359 @@
+import numpy as np
+from matplotlib import pyplot as plt
+import math
+import cv2
+import os
+import gc
+import time
+import colorsys
+
+
+def Harris(img, window_size=3, sobel_size=3, k=0.04, step_size=1):
+    if len(img.shape) > 2:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    h, w = img.shape[0], img.shape[1]
+
+    sobelx = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=sobel_size)
+    sobely = cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=sobel_size)
+
+    Ixx = sobelx ** 2
+    Iyy = sobely ** 2
+    Ixy = sobelx * sobely
+
+    R = np.zeros_like(img, dtype=np.float64)
+
+    offset = np.floor(window_size / 2).astype(np.int8)
+    for y in range(offset, h-offset, step_size):
+        for x in range(offset, w-offset, step_size):
+            Sxx = np.sum(Ixx[y-offset:y+1+offset, x-offset:x+1+offset])
+            Syy = np.sum(Iyy[y-offset:y+1+offset, x-offset:x+1+offset])
+            Sxy = np.sum(Ixy[y-offset:y+1+offset, x-offset:x+1+offset])
+            r = (Sxx*Syy)-(Sxy**2) - k*(Sxx+Syy)**2
+            if r < 0:
+                r = 0
+            R[y][x] = r
+
+    R /= np.max(R)
+    R *= 255.0
+    # _, R = cv2.threshold(R, 0.01 * np.max(R), 255, 0)
+    return R
+
+
+def non_max_suppression(img, window_size=5, thresh=2.5):
+    h, w = img.shape[0], img.shape[1]
+
+    offset = np.floor(window_size / 2).astype(np.int8)
+
+    temp = np.zeros_like(img)
+    temp[offset:h-offset, offset:w-offset] = img[offset:h-offset, offset:w-offset]
+    img = temp
+    del temp
+
+    index = np.zeros((h, w, 3), dtype=np.int16)
+
+    index[:, :, 0] = img
+
+    for y in range(h):
+        for x in range(w):
+            index[y][x][1] = x
+            index[y][x][2] = y
+
+    corners = []
+
+    global NMS_index
+    NMS_index = np.zeros((h, w))
+
+    for y in range(offset, h - offset, offset):
+        for x in range(offset, w - offset, offset):
+            ret = mean_shift_converge(index, (x, y), window_size, thresh)
+            if ret:
+                corners.append(ret)
+
+    corners = list(set(corners))
+    corners.sort()
+    return corners
+
+
+def mean_shift_converge(index, point, window_size=5, thresh=2.5):
+    x, y = point
+    offset = np.floor(window_size / 2).astype(np.int8)
+
+    if NMS_index[y][x] == 1:
+        return None
+
+    window = index[y - offset:y + 1 + offset, x - offset:x + 1 + offset]
+    if np.max(window[:, :, 0]) > thresh:
+        window = np.reshape(window, (window_size ** 2, 3))
+        window[::-1] = window[window[:, 0].argsort()]
+        if window[0][1] == x and window[0][2] == y:
+            NMS_index[y][x] = 1
+            return x, y
+        else:
+            if mean_shift_converge(index, (window[0][1], window[0][2]), window_size, thresh):
+                NMS_index[y][x] = 1
+                return window[0][1], window[0][2]
+            else:
+                return None
+    else:
+        return None
+
+
+def NCC(img1, img2, p1, p2, window_size=3):
+    if len(img1.shape) > 2:
+        img1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+
+    if len(img2.shape) > 2:
+        img2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+
+    h, w = img1.shape[0], img1.shape[1]
+
+    offset = np.floor(window_size / 2).astype(np.int8)
+
+    (x1, y1) = p1
+    (x2, y2) = p2
+
+    if x1 <= offset or x1 >= (w-offset) or y1 <= offset or y1 >= (h-offset) or\
+            x2 <= offset or x2 >= (w - offset) or y2 <= offset or y2 >= (h - offset):
+        return 0
+
+    window1 = img1[y1-offset:y1+1+offset, x1-offset:x1+1+offset]
+    window1 = window1.astype(np.float64)
+
+    window2 = img2[y2-offset:y2+1+offset, x2-offset:x2+1+offset]
+    window2 = window2.astype(np.float64)
+
+    mean1 = np.mean(window1)
+    std1 = np.std(window1)
+
+    mean2 = np.mean(window2)
+    std2 = np.std(window2)
+
+    s = 0
+    for i in range(0, window_size):
+        for j in range(0, window_size):
+            s += (window1[i][j] - mean1) / std1 * (window2[i][j] - mean2) / std2
+    s /= (window_size ** 2)
+
+    return s
+
+
+def remove_values_from_list(the_list, val):
+    return [value for value in the_list if value[1] != val]
+
+
+def filter_NCC(NCC_list, len_thresh=0, score_thresh=0):
+    NCC_list.sort(key=lambda x: x[0], reverse=True)
+
+    if score_thresh > 0:
+        NCC_list = [NCC_list[i] for i in range(len(NCC_list)) if NCC_list[i][0] > score_thresh]
+
+    if 0 < len_thresh <= len(NCC_list):
+        NCC_list = NCC_list[:len_thresh]
+
+    return NCC_list
+
+def RANSAC(corres):
+    p = 0.99
+    e = 0.6
+    s = len(corres)
+    N = np.log(1-p)/(np.log(1-(1-e)**s))
+    N = np.int32(N)
+
+    inliners = []
+    inlinecount = 0
+    resF = []
+    
+    for x in range(0,N):
+        pointsImg1 = []
+        pointsImg2 = []
+        c = 0
+        
+        while (c < 8): 
+
+            r = np.random.randint(low = 0, high = len(corres))
+            if (corres[r][0] not in pointsImg1): 
+                if (corres[r][1] not in pointsImg2):
+                    pointsImg1.append(corres[r][0])
+                    pointsImg2.append(corres[r][1])
+                    c +=1
+
+        F = fundMat8Points(pointsImg1, pointsImg2)
+
+        counter = 0
+        thresh = 0.001
+        temp = []
+        
+        for p in corres:
+            points = np.array(p)
+            pl = np.append(points[0],[1])
+            pr = np.append(points[1],[1])
+            plT = [[pl[0]],[pl[1]],[pl[2]]]
+            res = pr@F@plT
+           
+            if (res > -thresh and res < thresh ):
+                counter +=1 
+                temp.append(p)
+        
+        if (counter > inlinecount):
+            inlinecount = counter 
+            inliners = temp
+            resF = F
+        
+        if (counter == len(corres)):
+            x = N
+
+
+    if (counter == 0):
+        print("ERROR!!!")
+
+    print (len(corres), "____\n")
+    print (inlinecount,"______\n")
+
+    return (inliners, resF)
+
+    
+def fundMat8Points(pImg1, pImg2):
+    A = []
+
+    pImg1 = np.array(pImg1)
+    pImg2 = np.array(pImg2)
+    ones = np.ones((8,1))
+    pImg1 = np.hstack((pImg1,ones))
+    pImg2 = np.hstack((pImg2,ones))
+
+    ux1 = np.mean(pImg1[:,0])
+    uy1 = np.mean(pImg1[:,1])
+    ux2 = np.mean(pImg2[:,0])
+    uy2 = np.mean(pImg2[:,1])
+
+    T1 = [[1, 0, -ux1],[0, 1, -uy1],[0, 0, 1]]
+    T2 = [[1, 0, -ux2],[0, 1, -uy2],[0, 0, 1]]
+
+    for i in range (0,8):
+        pImg1[i] = pImg1[i]@T1
+        pImg2[i] = pImg2[i]@T2
+        
+
+    sdvx1 = np.std(pImg1[:,0])
+    sdvy1 = np.std(pImg1[:,1])
+    sdvx2 = np.std(pImg2[:,0])
+    sdvy2 = np.std(pImg2[:,1])
+
+    T1 = [[1/sdvx1, 0, 0],[0, 1/sdvy1, 0],[0, 0, 1]]
+    T2 = [[1/sdvx2, 0, 0],[0, 1/sdvy2, 0],[0, 0, 1]]
+
+    for i in range (0,8):
+        pImg1[i] = T1@pImg1[i]
+        pImg2[i] = T2@pImg2[i]  
+
+    T1 = [[1/sdvx1, 0, -ux1],[0, 1/sdvy1, -uy1],[0, 0, 1]]
+    T2 = [[1/sdvx2, 0, -ux2],[0, 1/sdvy2, -uy2],[0, 0, 1]] 
+    
+    for i in range (0, 8):
+        A.append ([pImg1[i][0]*pImg2[i][0], 
+                  pImg1[i][0]*pImg2[i][1],
+                  pImg1[i][0],
+                  pImg1[i][1]*pImg2[i][0],
+                  pImg1[i][1]*pImg2[i][1],
+                  pImg1[i][1],
+                  pImg2[i][0],
+                  pImg2[i][1],
+                  1]) 
+
+    _, _, v = np.linalg.svd(A) 
+    vT = np.transpose(v)
+    F = vT[:,8]
+    F = np.reshape(F, (3,3))
+
+    u,d,v = np.linalg.svd(F)
+    d[2] = 0
+    F = (u * d[..., None, :]) @ v
+
+
+    T1 = np.array(T1)
+    T2 = np.array(T2)
+    F = np.transpose(T2)@F@T1
+    return (F)
+
+def display_corner_pairings(img1, img2, lines, y1_shift=0, y2_shift=0):
+    w1, h1 = img1.shape[1], img1.shape[0]
+    w2, h2 = img2.shape[1], img2.shape[0]
+
+    w_max, h_max = np.max((w1, w2)), np.max((h1, h2))
+
+    out1 = np.zeros((h_max, w_max, 3), dtype=np.uint8)
+    out1[y1_shift:h1+y1_shift, 0:w1] = img1
+    out2 = np.zeros((h_max, w_max, 3), dtype=np.uint8)
+    out2[y2_shift:h2+y2_shift, 0:w2] = img2
+    combine = np.concatenate((out1, out2), axis=1)
+
+    for p in lines:
+        cv2.circle(combine, (p[0][0], p[0][1] + y1_shift), 2, (0, 0, 255), 1)
+        cv2.circle(combine, (p[1][0] + w1, p[1][1] + y2_shift), 2, (0, 0, 255), 1)
+
+        hsv = np.array((np.random.rand(), 1, 1))
+        rgb = list((np.array(colorsys.hsv_to_rgb(hsv[0], hsv[1], hsv[2])) * 255.0).astype(np.uint16))
+        rgb = [int(rgb[0]), int(rgb[1]), int(rgb[2])]
+        cv2.line(combine, (p[0][0], p[0][1]+y1_shift), (p[1][0]+w1, p[1][1]+y2_shift), rgb, 1)
+
+    plt.imshow(combine)
+    plt.axis('off')
+    plt.show()
+
+
+def main():
+    dataset_path = ["cast"]#"cast"]
+
+    for path in dataset_path:
+        print(path)
+
+        # Open first 2 images in the specified folder and save them in imgset
+        imgset = []
+        for i in range(2):
+            imgset.append(cv2.cvtColor(cv2.imread(path + '/' + os.listdir(path + '/')[i]), cv2.COLOR_BGR2RGB))
+
+        w, h = imgset[0].shape[1], imgset[0].shape[0]
+
+        # Get corners for the first image
+        a = time.time()                     # Timing Statements
+        ret = Harris(imgset[0], 3, 3, 0.04, step_size=2)
+        print("Harris: ", time.time() - a)  # Timing Statements
+        a = time.time()                     # Timing Statements
+        centroids = non_max_suppression(ret, 15)
+        print("NMS: ", time.time() - a)  # Timing Statements
+        a = time.time()                     # Timing Statements
+        corners = [centroids]
+
+        # Get corners for the second image
+        ret = Harris(imgset[1], 3, 3, 0.04, step_size=2)
+        print("Harris: ", time.time() - a)  # Timing Statements
+        a = time.time()                     # Timing Statements
+        centroids = non_max_suppression(ret, 15)
+        print("NMS: ", time.time() - a)
+        a = time.time()
+        corners.append(centroids)
+
+        # Calculate NCC score for each corner pairing
+        NCC_score = []
+        for i in range(len(corners[0])):
+            for j in range(len(corners[1])):
+                score = NCC(imgset[0], imgset[1], corners[0][i], corners[1][j], 15)
+                NCC_score.append((score, corners[0][i], corners[1][j]))
+
+        # Filters the NCC list based on some parameters - sort by score with a threshold, min length
+        NCC_score = filter_NCC(NCC_score, len_thresh=20)
+        print("NCC: ", time.time() - a)     # Timing Statements
+        a = time.time()                     # Timing Statements
+
+        # Display corner pairings before RANSAC
+        p1 = [(p[1], p[2]) for p in NCC_score]
+        display_corner_pairings(imgset[0], imgset[1], p1)
+
+        inliners, F = RANSAC(p1)
+         # Display corner pairings after RANSAC
+        display_corner_pairings(imgset[0], imgset[1], inliners)
+
+
+if __name__ == "__main__":
+    main()
